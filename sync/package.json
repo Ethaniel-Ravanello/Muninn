@@ -1,0 +1,13 @@
+{
+  "name": "muninn-vault-sync",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Two-way sync between Muninn notes and an Obsidian vault folder (e.g. Google Drive for desktop).",
+  "scripts": {
+    "start": "node sync.mjs",
+    "once": "node sync.mjs --once",
+    "dry-run": "node sync.mjs --dry-run"
+  },
+  "engines": { "node": ">=20" }
+}

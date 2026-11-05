@@ -1,0 +1,9 @@
+node_modules/
+dist/
+backend/pb_data/
+backend/pocketbase.exe
+backend/pocketbase
+.env
+.env.*
+sync/config.json
+sync/state-*.json

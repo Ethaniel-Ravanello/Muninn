@@ -1,0 +1,7 @@
+{
+  "pocketbaseUrl": "http://127.0.0.1:8090",
+  "email": "you@example.com",
+  "password": "your-muninn-password",
+  "vaultPath": "G:/My Drive/Obsidian/MyVault",
+  "intervalSeconds": 30
+}
