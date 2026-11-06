@@ -44,9 +44,14 @@ Click a note to open its own page. `Ctrl+E` (or the View / Edit tabs) switches m
 
 - **View**: rendered Markdown (headings, lists, tables, code, quotes). Task checkboxes are clickable and write back to the note.
   `[[wikilinks]]` open the note (a dashed link creates it on click), `#tags` search your notes, and "Linked mentions" lists backlinks.
-- **Edit**: Markdown editor with live preview (marks like `**` and `#` hide on lines you are not editing), `[[` autocomplete,
-  `Ctrl+B` / `Ctrl+I`, automatic list continuation, `Ctrl+click` on a wikilink to follow it, and autosave (about 1 s after you stop typing).
-- Not there yet: `![[embeds]]`, callouts, a graph view, and image attachments from the vault.
+- **Edit**: Markdown editor with live preview (marks like `**` and `#` hide on lines you are not editing), a formatting
+  toolbar (headings, bold/italic/strikethrough, inline code, lists, task list, quote, wikilink, link, code block, table,
+  horizontal rule), `[[` autocomplete, `Ctrl+B` / `Ctrl+I` / `Ctrl+Shift+X`, automatic list continuation,
+  `Ctrl+click` on a wikilink to follow it, and autosave (about 1 s after you stop typing).
+- **Images**: paste from the clipboard, drag-and-drop, or use the toolbar image button. Each image is uploaded to the
+  `attachments` collection and inserted as `![alt](muninn-attachment:ID/FILE)`, which renders inline in both Edit and View.
+  Restart PocketBase once after pulling so the `attachments` migration applies.
+- Not there yet: `![[embeds]]`, callouts, and a graph view.
 
 ## Obsidian sync (two-way)
 
@@ -76,6 +81,8 @@ How notes map to files:
 Rules worth knowing:
 
 - Other frontmatter (aliases, dates, ...) is stored and written back untouched. `.obsidian/`, `.trash/` and any dot-folder are ignored.
+- Images pasted in Muninn are kept as `![alt](muninn-attachment:ID/FILE)`. That text round-trips through the vault safely,
+  but the bytes live in PocketBase (not the vault), so those images will not render inside Obsidian yet.
 - Edit on one side and the other follows. Rename or move a file in Obsidian and the same note is renamed, not duplicated.
 - If both sides changed since the last sync, the vault version wins and Muninn's version is saved next to it as
   `Title (Muninn conflict <date>).md`. Nothing is overwritten silently.

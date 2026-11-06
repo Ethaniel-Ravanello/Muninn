@@ -1,9 +1,13 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, Pin, Trash2 } from 'lucide-react'
+import type { EditorView } from '@codemirror/view'
 import { pb, uidOwner, type Rec } from '../pb'
 import { MarkdownView, resolveNote, toggleTask, wikilinkTargets } from '../components/MarkdownView'
+import EditorToolbar from '../components/EditorToolbar'
 import { Badge } from '../components/ui'
+import { ensureFileToken, uploadImage } from '../attachments'
+import { insertAtCursor } from '../editor/commands'
 import { errMsg, splitTags } from '../util'
 
 // CodeMirror is the heavy part, so it only loads when you actually edit
@@ -27,9 +31,14 @@ export default function NoteDetail() {
   const [error, setError] = useState('')
   const [mode, setMode] = useState<Mode>(() => (localStorage.getItem('muninn:noteMode') === 'edit' ? 'edit' : 'view'))
 
+  const [uploading, setUploading] = useState(false)
+  // bumped once a file token is ready, so images (private files) can load on first paint
+  const [tokenTick, setTokenTick] = useState(0)
+
   const draftRef = useRef<Draft | null>(null)
   const dirty = useRef(false)
   const timer = useRef<number | undefined>(undefined)
+  const viewRef = useRef<EditorView | null>(null)
 
   /* ---- saving ---- */
   const flush = useCallback(async () => {
@@ -62,6 +71,17 @@ export default function NoteDetail() {
     window.clearTimeout(timer.current)
     timer.current = window.setTimeout(() => void flush(), 800)
   }
+
+  /* ---- a file token lets private attachment images load; get it before first paint ---- */
+  useEffect(() => {
+    let cancelled = false
+    void ensureFileToken().then(() => { if (!cancelled) setTokenTick((n) => n + 1) })
+    // refresh well within PocketBase's ~2 min token lifetime so images keep loading
+    const iv = window.setInterval(() => {
+      void ensureFileToken().then(() => { if (!cancelled) setTokenTick((n) => n + 1) })
+    }, 80_000)
+    return () => { cancelled = true; window.clearInterval(iv) }
+  }, [])
 
   /* ---- loading ---- */
   useEffect(() => {
@@ -112,6 +132,25 @@ export default function NoteDetail() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [mode, switchMode])
+
+  /* ---- images: upload, then drop the markdown at the cursor ---- */
+  const addImages = useCallback(async (files: File[]) => {
+    const view = viewRef.current
+    setUploading(true)
+    setError('')
+    try {
+      for (const file of files) {
+        const md = await uploadImage(file)
+        if (view) insertAtCursor(view, md + '\n')
+        else if (draftRef.current) change({ content: draftRef.current.content + '\n' + md + '\n' })
+      }
+    } catch (e) {
+      setError(errMsg(e))
+    } finally {
+      setUploading(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   /* ---- navigation helpers ---- */
   const open = async (noteId: string) => { await flush(); nav(`/notes/${noteId}`) }
@@ -194,11 +233,13 @@ export default function NoteDetail() {
 
       {mode === 'edit' ? (
         <Suspense fallback={<div className="muted">Loading editor...</div>}>
-          <NoteEditor key={id} value={draft.content} titles={titles} autoFocus
-            onChange={(content) => change({ content })} onOpenLink={openByTarget} />
+          <EditorToolbar getView={() => viewRef.current} onPickImages={(f) => void addImages(f)} uploading={uploading} />
+          <NoteEditor key={id} value={draft.content} titles={titles} autoFocus refreshKey={tokenTick}
+            onChange={(content) => change({ content })} onOpenLink={openByTarget}
+            onImages={(f) => void addImages(f)} onReady={(v) => { viewRef.current = v }} />
         </Suspense>
       ) : draft.content.trim() ? (
-        <MarkdownView content={draft.content} notes={notes}
+        <MarkdownView key={tokenTick} content={draft.content} notes={notes}
           onToggleTask={(i) => change({ content: toggleTask(draft.content, i) })}
           onOpenNote={(nid) => void open(nid)} onCreateNote={(t) => void createLinked(t)} />
       ) : (

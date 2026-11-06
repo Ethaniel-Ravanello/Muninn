@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { Marked, type TokenizerAndRendererExtension } from 'marked'
 import DOMPurify from 'dompurify'
 import type { Rec } from '../pb'
+import { resolveAttachmentUrls } from '../attachments'
 
 const escapeHtml = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string)
@@ -77,9 +78,11 @@ function ensureHook() {
 
 export function renderMarkdown(src: string, notes: Rec[]): string {
   ensureHook()
+  // rewrite muninn-attachment: references to real file URLs so <img> tags load
+  const withImages = resolveAttachmentUrls(src)
   // breaks: true matches Obsidian's default, where a single newline is a line break
   const marked = new Marked({ gfm: true, breaks: true, extensions: extensions(notes) })
-  const html = marked.parse(src, { async: false }) as string
+  const html = marked.parse(withImages, { async: false }) as string
   return DOMPurify.sanitize(html) // notes may come from a synced vault, so never trust raw HTML
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { EditorSelection, EditorState, RangeSetBuilder } from '@codemirror/state'
+import { EditorState, RangeSetBuilder } from '@codemirror/state'
 import {
   Decoration, EditorView, MatchDecorator, ViewPlugin, drawSelection, keymap, placeholder,
   type DecorationSet, type ViewUpdate,
@@ -9,6 +9,9 @@ import { HighlightStyle, syntaxHighlighting, syntaxTree } from '@codemirror/lang
 import { autocompletion, type CompletionContext } from '@codemirror/autocomplete'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { tags as t } from '@lezer/highlight'
+import { toggleWrap } from '../editor/commands'
+import { imagePreview, refreshImages } from '../editor/imageWidget'
+import { isImageFile } from '../attachments'
 
 /* ---------- look: headings, bold, links... styled right in the editor ---------- */
 const highlight = HighlightStyle.define([
@@ -142,25 +145,6 @@ const hashtags = matchPlugin(new MatchDecorator({
   decoration: Decoration.mark({ class: 'cm-hashtag' }),
 }))
 
-/* ---------- shortcuts ---------- */
-const wrap = (mark: string) => (view: EditorView) => {
-  view.dispatch(view.state.changeByRange((range) => {
-    const before = view.state.sliceDoc(Math.max(0, range.from - mark.length), range.from)
-    const after = view.state.sliceDoc(range.to, range.to + mark.length)
-    if (before === mark && after === mark) {
-      return {
-        changes: [{ from: range.from - mark.length, to: range.from }, { from: range.to, to: range.to + mark.length }],
-        range: EditorSelection.range(range.from - mark.length, range.to - mark.length),
-      }
-    }
-    return {
-      changes: [{ from: range.from, insert: mark }, { from: range.to, insert: mark }],
-      range: EditorSelection.range(range.from + mark.length, range.to + mark.length),
-    }
-  }))
-  return true
-}
-
 export interface NoteEditorProps {
   value: string
   onChange: (value: string) => void
@@ -168,13 +152,20 @@ export interface NoteEditorProps {
   titles: string[]
   /** Ctrl/Cmd + click on a [[wikilink]] */
   onOpenLink: (target: string) => void
+  /** pasted / dropped image files, uploaded by the parent */
+  onImages?: (files: File[]) => void
+  /** hands the live CodeMirror view back to the parent (for the toolbar) */
+  onReady?: (view: EditorView | null) => void
+  /** bump this to re-render inline images (e.g. after a file-token refresh) */
+  refreshKey?: number
   autoFocus?: boolean
 }
 
-export default function NoteEditor({ value, onChange, titles, onOpenLink, autoFocus }: NoteEditorProps) {
+export default function NoteEditor({ value, onChange, titles, onOpenLink, onImages, onReady, refreshKey, autoFocus }: NoteEditorProps) {
   const host = useRef<HTMLDivElement>(null)
-  const live = useRef({ onChange, titles, onOpenLink })
-  live.current = { onChange, titles, onOpenLink }
+  const viewRef = useRef<EditorView | null>(null)
+  const live = useRef({ onChange, titles, onOpenLink, onImages, onReady })
+  live.current = { onChange, titles, onOpenLink, onImages, onReady }
 
   useEffect(() => {
     const complete = (ctx: CompletionContext) => {
@@ -199,19 +190,41 @@ export default function NoteEditor({ value, onChange, titles, onOpenLink, autoFo
           syntaxHighlighting(highlight),
           theme,
           livePreview,
+          imagePreview,
           wikilinks,
           hashtags,
-          placeholder('Start writing. Use [[ to link notes, #tags, and Markdown.'),
+          placeholder('Start writing. Use [[ to link notes, #tags, Markdown, and paste images.'),
           autocompletion({ override: [complete], icons: false }),
           keymap.of([
-            { key: 'Mod-b', run: wrap('**') },
-            { key: 'Mod-i', run: wrap('*') },
+            { key: 'Mod-b', run: (v) => toggleWrap(v, '**') },
+            { key: 'Mod-i', run: (v) => toggleWrap(v, '*') },
+            { key: 'Mod-Shift-x', run: (v) => toggleWrap(v, '~~') },
             ...defaultKeymap,
             ...historyKeymap,
             indentWithTab,
           ]),
           EditorView.updateListener.of((u) => { if (u.docChanged) live.current.onChange(u.state.doc.toString()) }),
           EditorView.domEventHandlers({
+            paste(e) {
+              const items = e.clipboardData?.files
+              if (!items || !items.length) return false
+              const imgs = Array.from(items).filter(isImageFile)
+              if (!imgs.length || !live.current.onImages) return false
+              e.preventDefault()
+              live.current.onImages(imgs)
+              return true
+            },
+            drop(e, v) {
+              const files = e.dataTransfer?.files
+              if (!files || !files.length) return false
+              const imgs = Array.from(files).filter(isImageFile)
+              if (!imgs.length || !live.current.onImages) return false
+              e.preventDefault()
+              const pos = v.posAtCoords({ x: e.clientX, y: e.clientY })
+              if (pos !== null) v.dispatch({ selection: { anchor: pos } })
+              live.current.onImages(imgs)
+              return true
+            },
             mousedown(e, v) {
               if (!(e.ctrlKey || e.metaKey)) return false
               const pos = v.posAtCoords({ x: e.clientX, y: e.clientY })
@@ -232,14 +245,21 @@ export default function NoteEditor({ value, onChange, titles, onOpenLink, autoFo
         ],
       }),
     })
+    viewRef.current = view
+    live.current.onReady?.(view)
     if (autoFocus) {
       view.focus()
       view.dispatch({ selection: { anchor: view.state.doc.length } })
     }
-    return () => view.destroy()
+    return () => { live.current.onReady?.(null); viewRef.current = null; view.destroy() }
     // the editor owns its document after mount; the parent remounts it per note
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // a file token arrived/refreshed: rebuild the inline image widgets with the new URL
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: refreshImages.of(null) })
+  }, [refreshKey])
 
   return <div ref={host} className="cm-host" />
 }

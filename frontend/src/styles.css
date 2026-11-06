@@ -324,6 +324,34 @@ tbody tr:hover { background: var(--surface-2); }
 .note-page input.note-title::placeholder { color: var(--faint); }
 .note-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
 .cm-host { min-height: 52vh; }
+
+/* ---------- editor toolbar (Obsidian-style) ---------- */
+.note-toolbar {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
+  padding: 6px 6px; margin-bottom: 8px;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border); border-radius: 10px;
+}
+.note-toolbar .tb-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 30px; padding: 0;
+  background: transparent; border: none; border-radius: 7px;
+  color: var(--muted); cursor: pointer; transition: background 0.12s, color 0.12s;
+}
+.note-toolbar .tb-btn:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
+.note-toolbar .tb-btn:active:not(:disabled) { background: var(--border-2); }
+.note-toolbar .tb-btn:disabled { opacity: 0.4; cursor: default; }
+.note-toolbar .tb-sep { width: 1px; height: 18px; margin: 0 4px; background: var(--border-2); }
+.note-toolbar .tb-status { margin-left: 2px; }
+
+/* images shown inline inside the editor (live preview) */
+.cm-img-preview { padding: 6px 2px; }
+.cm-img-preview img {
+  max-width: 100%; max-height: 420px; border-radius: 8px;
+  border: 1px solid var(--border); display: block;
+}
 .note-props { margin-top: 24px; color: var(--muted); }
 .note-props summary { cursor: pointer; font-size: 12.5px; letter-spacing: 0.08em; text-transform: uppercase; }
 .note-props pre { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; overflow-x: auto; font-size: 13px; }
