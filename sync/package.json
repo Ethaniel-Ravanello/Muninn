@@ -5,9 +5,9 @@
   "type": "module",
   "description": "Two-way sync between Muninn notes and an Obsidian vault folder (e.g. Google Drive for desktop).",
   "scripts": {
-    "start": "node sync.mjs",
-    "once": "node sync.mjs --once",
-    "dry-run": "node sync.mjs --dry-run"
+    "start": "node --env-file=.env sync.mjs",
+    "once": "node --env-file=.env sync.mjs --once",
+    "dry-run": "node --env-file=.env sync.mjs --dry-run"
   },
   "engines": { "node": ">=20" }
 }
