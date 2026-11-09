@@ -34,8 +34,12 @@ export default function Dashboard() {
 
   const toggleHabit = async (id: string) => {
     const l = logs.items.find((x) => x.habit === id)
-    if (l) await logs.remove(l.id)
-    else await logs.create({ habit: id, date: t })
+    try {
+      if (l) await logs.remove(l.id)
+      else await logs.create({ habit: id, date: t })
+    } catch {
+      await logs.reload() // e.g. the log already exists (unique per habit and day): just resync
+    }
   }
 
   return (

@@ -10,7 +10,7 @@ import { addDays, diffDays, errMsg, fmtDate, relDay, today } from '../util'
 
 const FIELDS: Field[] = [
   { name: 'title', label: 'Reminder', type: 'text', required: true, full: true },
-  { name: 'due', label: 'Due', type: 'date', required: true, default: today() },
+  { name: 'due', label: 'Due', type: 'date', required: true, default: today },
   { name: 'repeat', label: 'Repeat', type: 'select', options: opts('none', 'daily', 'weekly', 'monthly', 'yearly'), default: 'none', required: true },
   { name: 'notes', label: 'Notes', type: 'textarea' },
 ]

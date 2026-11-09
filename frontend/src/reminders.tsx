@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { pb, uidOwner, type Rec } from './pb'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { logHabitToday, pb, payBill, type Rec } from './pb'
 import { addDays, advance, money, today } from './util'
 
 export type Source = 'reminder' | 'task' | 'bill' | 'maintenance' | 'document' | 'contact'
@@ -56,16 +56,7 @@ async function load(): Promise<RItem[]> {
 
   subs.forEach((s) => out.push({
     key: `bill-${s.id}`, title: s.name, sub: money(s.amount), due: s.next_due, source: 'bill', route: '/subscriptions', rec: s,
-    action: {
-      label: 'Paid',
-      run: async () => {
-        await pb.collection('expenses').create({
-          user: uidOwner(), title: s.name, amount: s.amount, type: 'expense',
-          category: s.category || 'Subscriptions', date: today(), note: 'Bill paid',
-        })
-        await pb.collection('subscriptions').update(s.id, { next_due: advance(s.next_due, s.cycle) })
-      },
-    },
+    action: { label: 'Paid', run: () => payBill(s) },
   }))
 
   habits.filter((h) => h.interval_days > 0).forEach((h) => out.push({
@@ -75,7 +66,7 @@ async function load(): Promise<RItem[]> {
       label: 'Done',
       run: async () => {
         await pb.collection('habits').update(h.id, { last_done: today() })
-        await pb.collection('habit_logs').create({ user: uidOwner(), habit: h.id, date: today() })
+        await logHabitToday(h.id)
       },
     },
   }))
@@ -93,7 +84,15 @@ async function load(): Promise<RItem[]> {
   return out.filter((i) => i.due <= limit).sort((a, b) => a.due.localeCompare(b.due))
 }
 
-export function useReminderItems() {
+interface ReminderState { items: RItem[]; loading: boolean; reload: () => Promise<void> }
+const Ctx = createContext<ReminderState | null>(null)
+
+/**
+ * Loads the due items once for the whole app (sidebar badge, dashboard and the Reminders page
+ * used to load them three times). Any `muninn:changed` event reloads, debounced so a burst
+ * of edits causes a single refresh.
+ */
+export function ReminderProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<RItem[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -103,12 +102,20 @@ export function useReminderItems() {
 
   useEffect(() => {
     void reload()
-    const h = () => void reload()
+    let t: number | undefined
+    const h = () => { window.clearTimeout(t); t = window.setTimeout(() => void reload(), 200) }
     window.addEventListener('muninn:changed', h)
-    return () => window.removeEventListener('muninn:changed', h)
+    return () => { window.clearTimeout(t); window.removeEventListener('muninn:changed', h) }
   }, [reload])
 
-  return { items, loading, reload }
+  const value = useMemo(() => ({ items, loading, reload }), [items, loading, reload])
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>
+}
+
+export function useReminderItems(): ReminderState {
+  const v = useContext(Ctx)
+  if (!v) throw new Error('useReminderItems must be used inside <ReminderProvider>')
+  return v
 }
 
 /** Tell other widgets (sidebar badge, dashboard) that data changed. */

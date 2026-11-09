@@ -6,7 +6,7 @@ import { pb, uidOwner, type Rec } from '../pb'
 import { MarkdownView, resolveNote, toggleTask, wikilinkTargets } from '../components/MarkdownView'
 import EditorToolbar from '../components/EditorToolbar'
 import { Badge } from '../components/ui'
-import { ensureFileToken, uploadImage } from '../attachments'
+import { loadImageIndex, uploadImage } from '../attachments'
 import { insertAtCursor } from '../editor/commands'
 import { errMsg, splitTags } from '../util'
 
@@ -21,37 +21,71 @@ const toDraft = (n: Rec): Draft => ({
   title: n.title ?? '', category: n.category ?? '', tags: n.tags ?? '', content: n.content ?? '', pinned: !!n.pinned,
 })
 
+/** What actually gets stored: same trimming the server copy gets. */
+const normalize = (d: Draft): Draft => ({
+  title: d.title.trim() || 'Untitled', category: d.category.trim(), tags: d.tags.trim(), content: d.content, pinned: d.pinned,
+})
+
 export default function NoteDetail() {
   const { id = '' } = useParams()
   const nav = useNavigate()
+  // light list: id, title, path, category only. Full texts are never downloaded just to open one note.
   const [notes, setNotes] = useState<Rec[]>([])
+  const [backlinks, setBacklinks] = useState<{ id: string; title: string }[]>([])
+  const [props, setProps] = useState('')
   const [draft, setDraft] = useState<Draft | null>(null)
   const [missing, setMissing] = useState(false)
   const [status, setStatus] = useState<Status>('saved')
   const [error, setError] = useState('')
   const [mode, setMode] = useState<Mode>(() => (localStorage.getItem('muninn:noteMode') === 'edit' ? 'edit' : 'view'))
-
   const [uploading, setUploading] = useState(false)
-  // bumped once a file token is ready, so images (private files) can load on first paint
-  const [tokenTick, setTokenTick] = useState(0)
+  // text found on the server when it differs from what this editor started from (changed by Obsidian sync)
+  const [conflict, setConflict] = useState<string | null>(null)
+  // bumped to remount the editor after its text was replaced from outside
+  const [rev, setRev] = useState(0)
 
   const draftRef = useRef<Draft | null>(null)
+  /** the last version known to be on the server; autosave only sends what differs from it */
+  const baseRef = useRef<Draft | null>(null)
+  const conflictRef = useRef<string | null>(null)
   const dirty = useRef(false)
   const timer = useRef<number | undefined>(undefined)
   const viewRef = useRef<EditorView | null>(null)
+  const idRef = useRef(id)
+  idRef.current = id
+  const notesRef = useRef<Rec[]>([])
+  notesRef.current = notes
 
   /* ---- saving ---- */
   const flush = useCallback(async () => {
     window.clearTimeout(timer.current)
     const d = draftRef.current
-    if (!dirty.current || !d) return
+    const base = baseRef.current
+    if (!dirty.current || !d || !base || conflictRef.current !== null) return
+
+    const next = normalize(d)
+    const patch: Partial<Draft> = {}
+    ;(Object.keys(next) as (keyof Draft)[]).forEach((k) => { if (next[k] !== base[k]) Object.assign(patch, { [k]: next[k] }) })
+    if (Object.keys(patch).length === 0) { dirty.current = false; setStatus('saved'); return }
+
     dirty.current = false
     setStatus('saving')
     try {
-      const rec = await pb.collection('notes').update<Rec>(id, {
-        title: d.title.trim() || 'Untitled', category: d.category.trim(), tags: d.tags.trim(), content: d.content, pinned: d.pinned,
-      })
-      setNotes((prev) => prev.map((n) => (n.id === id ? rec : n)))
+      if ('content' in patch) {
+        // Obsidian sync can change this note while it is open here. Never overwrite text we have not seen.
+        const remote = await pb.collection('notes').getOne<Rec>(id, { fields: 'content' })
+        const rc = String(remote.content ?? '')
+        if (rc !== base.content && rc !== next.content) {
+          conflictRef.current = rc
+          setConflict(rc)
+          dirty.current = true
+          setStatus('error')
+          return
+        }
+      }
+      await pb.collection('notes').update(id, patch, { fields: 'id' })
+      baseRef.current = { ...base, ...patch }
+      setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, title: next.title, category: next.category } : n)))
       setStatus(dirty.current ? 'dirty' : 'saved')
       setError('')
     } catch (e) {
@@ -71,37 +105,83 @@ export default function NoteDetail() {
     window.clearTimeout(timer.current)
     timer.current = window.setTimeout(() => void flush(), 800)
   }
+  const changeRef = useRef(change)
+  changeRef.current = change
 
-  /* ---- a file token lets private attachment images load; get it before first paint ---- */
-  useEffect(() => {
-    let cancelled = false
-    void ensureFileToken().then(() => { if (!cancelled) setTokenTick((n) => n + 1) })
-    // refresh well within PocketBase's ~2 min token lifetime so images keep loading
-    const iv = window.setInterval(() => {
-      void ensureFileToken().then(() => { if (!cancelled) setTokenTick((n) => n + 1) })
-    }, 80_000)
-    return () => { cancelled = true; window.clearInterval(iv) }
-  }, [])
+  const keepMine = () => {
+    const base = baseRef.current
+    if (base && conflictRef.current !== null) baseRef.current = { ...base, content: conflictRef.current }
+    conflictRef.current = null
+    setConflict(null)
+    dirty.current = true
+    void flush()
+  }
+  const takeTheirs = () => {
+    const remote = conflictRef.current
+    const d = draftRef.current
+    if (remote === null || !d) return
+    const next = { ...d, content: remote }
+    draftRef.current = next
+    baseRef.current = baseRef.current ? { ...baseRef.current, content: remote } : next
+    conflictRef.current = null
+    setConflict(null)
+    setDraft(next)
+    dirty.current = false
+    setStatus('saved')
+    setRev((r) => r + 1) // the editor owns its text, so it has to be rebuilt to show the other version
+  }
 
-  /* ---- loading ---- */
+  /* ---- loading: this note in full, everyone else as a light list ---- */
   useEffect(() => {
     let cancelled = false
     draftRef.current = null
+    baseRef.current = null
+    conflictRef.current = null
+    dirty.current = false
     setDraft(null)
     setMissing(false)
     setStatus('saved')
-    pb.collection('notes').getFullList<Rec>({ sort: 'title' }).then((list) => {
+    setConflict(null)
+    setBacklinks([])
+    setProps('')
+    Promise.all([
+      pb.collection('notes').getOne<Rec>(id),
+      pb.collection('notes').getFullList<Rec>({ sort: 'title', fields: 'id,title,path,category' }),
+      loadImageIndex(), // must be ready before the note is drawn, so ![[image.png]] can find its picture
+    ]).then(([n, list]) => {
       if (cancelled) return
       setNotes(list)
-      const n = list.find((x) => x.id === id)
-      if (!n) { setMissing(true); return }
       const d = toDraft(n)
       draftRef.current = d
+      baseRef.current = d
+      setProps(String(n.fm ?? ''))
       setDraft(d)
       if (!d.content.trim()) setMode('edit') // a fresh note opens ready to type
     }).catch((e) => { if (!cancelled) { setMissing(true); setError(errMsg(e)) } })
     return () => { cancelled = true }
   }, [id])
+
+  // Linked mentions: let the server narrow it to notes that contain this note's name, then check those few.
+  const selfTitle = notes.find((n) => n.id === id)?.title as string | undefined
+  const selfPath = notes.find((n) => n.id === id)?.path as string | undefined
+  useEffect(() => {
+    if (!selfTitle) return
+    let cancelled = false
+    const fileName = String(selfPath ?? '').replace(/\.md$/i, '').split('/').pop() ?? ''
+    const terms = [...new Set([selfTitle, fileName].filter(Boolean))]
+    const params: Record<string, string> = { id }
+    terms.forEach((t, i) => { params[`t${i}`] = t })
+    const filter = pb.filter(`id != {:id} && (${terms.map((_, i) => `content ~ {:t${i}}`).join(' || ')})`, params)
+    const t = window.setTimeout(() => {
+      pb.collection('notes').getFullList<Rec>({ filter, fields: 'id,title,content' }).then((cands) => {
+        if (cancelled) return
+        setBacklinks(cands
+          .filter((c) => wikilinkTargets(String(c.content ?? '')).some((w) => resolveNote(notesRef.current, w)?.id === id))
+          .map((c) => ({ id: c.id, title: String(c.title) })))
+      }).catch(() => undefined)
+    }, 300)
+    return () => { cancelled = true; window.clearTimeout(t) }
+  }, [id, selfTitle, selfPath])
 
   // save whatever is pending when leaving the note or hiding the tab
   useEffect(() => {
@@ -135,21 +215,22 @@ export default function NoteDetail() {
 
   /* ---- images: upload, then drop the markdown at the cursor ---- */
   const addImages = useCallback(async (files: File[]) => {
-    const view = viewRef.current
+    const startId = idRef.current
     setUploading(true)
     setError('')
     try {
       for (const file of files) {
         const md = await uploadImage(file)
+        if (idRef.current !== startId) { setError('You switched notes while the image uploaded. Paste it again.'); return }
+        const view = viewRef.current
         if (view) insertAtCursor(view, md + '\n')
-        else if (draftRef.current) change({ content: draftRef.current.content + '\n' + md + '\n' })
+        else if (draftRef.current) changeRef.current({ content: draftRef.current.content + '\n' + md + '\n' })
       }
     } catch (e) {
       setError(errMsg(e))
     } finally {
       setUploading(false)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   /* ---- navigation helpers ---- */
@@ -175,13 +256,8 @@ export default function NoteDetail() {
   }
 
   /* ---- derived ---- */
-  const note = notes.find((n) => n.id === id)
   const categories = useMemo(() => [...new Set(notes.map((n) => String(n.category ?? '')).filter(Boolean))].sort(), [notes])
   const titles = useMemo(() => notes.filter((n) => n.id !== id).map((n) => String(n.title)), [notes, id])
-  const backlinks = useMemo(() => {
-    if (!note) return []
-    return notes.filter((n) => n.id !== id && wikilinkTargets(String(n.content ?? '')).some((t) => resolveNote(notes, t)?.id === id))
-  }, [notes, note, id])
 
   if (missing) {
     return (
@@ -211,6 +287,17 @@ export default function NoteDetail() {
         <button className="icon-btn" aria-label="Delete note" title="Delete" onClick={() => void remove()}><Trash2 size={17} /></button>
       </div>
 
+      {conflict !== null && (
+        <div className="card" role="alert" style={{ borderColor: 'var(--red)', marginBottom: 14 }}>
+          <div style={{ fontWeight: 600 }}>This note was changed somewhere else (probably the Obsidian sync).</div>
+          <div className="small muted">Autosave is paused so nothing gets overwritten. Pick the version to keep.</div>
+          <div className="row" style={{ marginTop: 10 }}>
+            <button className="btn" onClick={keepMine}>Keep my version</button>
+            <button className="btn" onClick={takeTheirs}>Use the other version</button>
+          </div>
+        </div>
+      )}
+
       <input className="note-title" type="text" value={draft.title} placeholder="Untitled" aria-label="Title"
         onChange={(e) => change({ title: e.target.value })} />
 
@@ -234,22 +321,22 @@ export default function NoteDetail() {
       {mode === 'edit' ? (
         <Suspense fallback={<div className="muted">Loading editor...</div>}>
           <EditorToolbar getView={() => viewRef.current} onPickImages={(f) => void addImages(f)} uploading={uploading} />
-          <NoteEditor key={id} value={draft.content} titles={titles} autoFocus refreshKey={tokenTick}
+          <NoteEditor key={`${id}:${rev}`} value={draft.content} titles={titles} autoFocus
             onChange={(content) => change({ content })} onOpenLink={openByTarget}
             onImages={(f) => void addImages(f)} onReady={(v) => { viewRef.current = v }} />
         </Suspense>
       ) : draft.content.trim() ? (
-        <MarkdownView key={tokenTick} content={draft.content} notes={notes}
+        <MarkdownView content={draft.content} notes={notes}
           onToggleTask={(i) => change({ content: toggleTask(draft.content, i) })}
           onOpenNote={(nid) => void open(nid)} onCreateNote={(t) => void createLinked(t)} />
       ) : (
         <p className="muted">This note is empty. Press <span className="kbd">Ctrl E</span> or click Edit to start writing.</p>
       )}
 
-      {mode === 'view' && note?.fm ? (
+      {mode === 'view' && props ? (
         <details className="note-props">
           <summary>Properties</summary>
-          <pre>{note.fm}</pre>
+          <pre>{props}</pre>
         </details>
       ) : null}
 

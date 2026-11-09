@@ -1,5 +1,6 @@
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth'
+import { ReminderProvider } from './reminders'
 import Layout from './components/Layout'
 import { MODULES } from './modules'
 import Login from './pages/Login'
@@ -18,6 +19,7 @@ function Gate() {
   const { authed } = useAuth()
   if (!authed) return <Login />
   return (
+    <ReminderProvider>
     <Routes>
       <Route element={<Layout />}>
         <Route index element={<Dashboard />} />
@@ -33,6 +35,7 @@ function Gate() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
+    </ReminderProvider>
   )
 }
 

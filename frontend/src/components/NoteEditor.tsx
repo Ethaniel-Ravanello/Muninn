@@ -10,7 +10,7 @@ import { autocompletion, type CompletionContext } from '@codemirror/autocomplete
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { tags as t } from '@lezer/highlight'
 import { toggleWrap } from '../editor/commands'
-import { imagePreview, refreshImages } from '../editor/imageWidget'
+import { imagePreview } from '../editor/imageWidget'
 import { isImageFile } from '../attachments'
 
 /* ---------- look: headings, bold, links... styled right in the editor ---------- */
@@ -156,14 +156,11 @@ export interface NoteEditorProps {
   onImages?: (files: File[]) => void
   /** hands the live CodeMirror view back to the parent (for the toolbar) */
   onReady?: (view: EditorView | null) => void
-  /** bump this to re-render inline images (e.g. after a file-token refresh) */
-  refreshKey?: number
   autoFocus?: boolean
 }
 
-export default function NoteEditor({ value, onChange, titles, onOpenLink, onImages, onReady, refreshKey, autoFocus }: NoteEditorProps) {
+export default function NoteEditor({ value, onChange, titles, onOpenLink, onImages, onReady, autoFocus }: NoteEditorProps) {
   const host = useRef<HTMLDivElement>(null)
-  const viewRef = useRef<EditorView | null>(null)
   const live = useRef({ onChange, titles, onOpenLink, onImages, onReady })
   live.current = { onChange, titles, onOpenLink, onImages, onReady }
 
@@ -206,10 +203,13 @@ export default function NoteEditor({ value, onChange, titles, onOpenLink, onImag
           EditorView.updateListener.of((u) => { if (u.docChanged) live.current.onChange(u.state.doc.toString()) }),
           EditorView.domEventHandlers({
             paste(e) {
-              const items = e.clipboardData?.files
-              if (!items || !items.length) return false
-              const imgs = Array.from(items).filter(isImageFile)
+              const cd = e.clipboardData
+              if (!cd || !cd.files.length) return false
+              const imgs = Array.from(cd.files).filter(isImageFile)
               if (!imgs.length || !live.current.onImages) return false
+              // Excel, Word and web pages put a rendered picture on the clipboard next to the text.
+              // When there is text, the user meant the text, so let the normal paste run.
+              if (cd.getData('text/plain').trim()) return false
               e.preventDefault()
               live.current.onImages(imgs)
               return true
@@ -245,21 +245,15 @@ export default function NoteEditor({ value, onChange, titles, onOpenLink, onImag
         ],
       }),
     })
-    viewRef.current = view
     live.current.onReady?.(view)
     if (autoFocus) {
       view.focus()
       view.dispatch({ selection: { anchor: view.state.doc.length } })
     }
-    return () => { live.current.onReady?.(null); viewRef.current = null; view.destroy() }
+    return () => { live.current.onReady?.(null); view.destroy() }
     // the editor owns its document after mount; the parent remounts it per note
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  // a file token arrived/refreshed: rebuild the inline image widgets with the new URL
-  useEffect(() => {
-    viewRef.current?.dispatch({ effects: refreshImages.of(null) })
-  }, [refreshKey])
 
   return <div ref={host} className="cm-host" />
 }

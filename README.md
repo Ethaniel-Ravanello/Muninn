@@ -51,7 +51,8 @@ Click a note to open its own page. `Ctrl+E` (or the View / Edit tabs) switches m
 - **Images**: paste from the clipboard, drag-and-drop, or use the toolbar image button. Each image is uploaded to the
   `attachments` collection and inserted as `![alt](muninn-attachment:ID/FILE)`, which renders inline in both Edit and View.
   Restart PocketBase once after pulling so the `attachments` migration applies.
-- Not there yet: `![[embeds]]`, callouts, and a graph view.
+- **Obsidian image embeds** (`![[file.png|300]]`) are drawn once the sync agent has uploaded the image (see below).
+- Not there yet: note transclusion (`![[Other note]]`), callouts, and a graph view.
 
 ## Obsidian sync (two-way)
 
@@ -63,11 +64,13 @@ Setup:
 
 1. Restart PocketBase once so the new migration (`path` and `fm` fields on notes) is applied.
 2. In Google Drive for desktop choose **Mirror files** (not Stream) so the vault is really on disk.
-3. `cd sync`, copy `config.example.json` to `config.json`, then fill in your Muninn email and password, the
-   PocketBase URL and `vaultPath` (forward slashes are fine, e.g. `G:/My Drive/Obsidian/MyVault`).
-4. Preview first: `node sync.mjs --dry-run` prints what would happen and changes nothing.
-5. Run for real: `node sync.mjs` (loops every 30 s) or `node sync.mjs --once`.
-   To keep it running, add a Windows Task Scheduler task "At log on" that runs `node C:\path\to\Muninn\sync\sync.mjs`.
+3. `cd sync`, copy `.env.example` to `.env`, then fill in your Muninn email and password, the PocketBase URL and the
+   vault path (forward slashes are fine, e.g. `G:/My Drive/Obsidian/MyVault`). `.env` is git-ignored.
+4. Preview first: `npm run dry-run` prints what would happen and changes nothing.
+5. Run for real: `npm start` (loops every 30 s) or `npm run once`.
+   These scripts run `node --env-file=.env sync.mjs`. Plain `node sync.mjs` does **not** read `.env`.
+   To keep it running, add a Windows Task Scheduler task "At log on" with program `node`, arguments
+   `--env-file=.env sync.mjs`, and **Start in** set to the `sync` folder (the `.env` path is relative to it).
 
 How notes map to files:
 
@@ -81,8 +84,15 @@ How notes map to files:
 Rules worth knowing:
 
 - Other frontmatter (aliases, dates, ...) is stored and written back untouched. `.obsidian/`, `.trash/` and any dot-folder are ignored.
-- Images pasted in Muninn are kept as `![alt](muninn-attachment:ID/FILE)`. That text round-trips through the vault safely,
-  but the bytes live in PocketBase (not the vault), so those images will not render inside Obsidian yet.
+- **Images, vault to Muninn:** Obsidian embeds like `![[Pasted image 123.png|300]]` (the number is the width) are drawn in
+  Muninn, in both View and Edit. The agent uploads every image a note embeds to the `attachments` collection, named after the
+  file, and remembers it so it is not sent twice (a changed file is sent again). The note text is never rewritten, so Obsidian
+  is unaffected. Limits: 15 MB per image, 25 uploads per pass (a big vault arrives over a few passes), images are matched
+  by file name, and an image that has not arrived yet shows as "Image not synced". Plain `![](relative/path.png)` links and
+  `![[Other note]]` transclusion are not drawn (the latter shows as a link). Nothing is deleted from Muninn when an image
+  disappears from the vault.
+- **Images, Muninn to vault:** images pasted in Muninn are kept as `![alt](muninn-attachment:ID/FILE)`. That text round-trips
+  through the vault safely, but the bytes live in PocketBase, so those images do not render inside Obsidian yet.
 - Edit on one side and the other follows. Rename or move a file in Obsidian and the same note is renamed, not duplicated.
 - If both sides changed since the last sync, the vault version wins and Muninn's version is saved next to it as
   `Title (Muninn conflict <date>).md`. Nothing is overwritten silently.
@@ -91,6 +101,8 @@ Rules worth knowing:
   and it will not delete more than 30% of tracked notes (min. 3) in one pass.
 - Run **one** agent per vault. Pointing agents for both a local and a server PocketBase at the same vault also works
   (the vault acts as the hub), but expect more conflict files if you edit in both places at once.
-- `config.json` holds your password in plain text. Keep it out of git (already ignored), or use the env vars
-  `MUNINN_URL`, `MUNINN_EMAIL`, `MUNINN_PASSWORD`, `MUNINN_VAULT` instead.
+- `.env` holds your password in plain text. It is git-ignored; never commit it, and never put credentials in any
+  tracked file. A `sync/config.json` (same keys as the `.env` names in camelCase) still works and is ignored too.
+- While a note is open in Muninn, autosave only sends what you changed and checks the stored text first. If the
+  Obsidian sync changed the note in the meantime, saving pauses and you pick which version to keep.
 - Back up the vault before the very first run (Google Drive keeps version history, which also helps).

@@ -12,10 +12,25 @@ import { errMsg, fmtDate, isUrl } from '../util'
 const PLAIN_LABEL: Field['type'][] = ['text', 'date', 'number', 'money']
 
 export default function GenericPage({ m }: { m: Module }) {
-  const { items, loading, error, create, update, remove, reload } = useCollection(m.collection, { sort: m.sort })
   const [params, setParams] = useSearchParams()
   const nav = useNavigate()
   const [q, setQ] = useState(params.get('q') ?? '')
+
+  // Light lists (Notes) do not hold the full text on the client, so plain-text search runs on the server.
+  const serverSearch = !!m.listFields
+  const [dq, setDq] = useState(q)
+  useEffect(() => {
+    const t = window.setTimeout(() => setDq(q), 250)
+    return () => window.clearTimeout(t)
+  }, [q])
+  const serverTerm = serverSearch ? dq.trim() : ''
+  const serverFilter = serverTerm && !serverTerm.startsWith('#')
+    ? pb.filter(m.searchFields.map((f) => `${f} ~ {:q}`).join(' || '), { q: serverTerm })
+    : undefined
+
+  const { items, loading, error, create, update, remove, reload } = useCollection(m.collection, {
+    sort: m.sort, filter: serverFilter, fields: m.listFields,
+  })
   const [filters, setFilters] = useState<Record<string, string>>({})
   const [editing, setEditing] = useState<Rec | 'new' | null>(null)
   const [related, setRelated] = useState<Rec[]>([])
@@ -41,16 +56,17 @@ export default function GenericPage({ m }: { m: Module }) {
   }
 
   const rows = useMemo(() => {
-    const needle = q.trim().toLowerCase()
+    const needle = (serverSearch ? dq : q).trim().toLowerCase()
     let r = items.filter((x) => {
       for (const [k, v] of Object.entries(filters)) if (v && String(x[k] ?? '') !== v) return false
       if (!needle) return true
       if (needle.startsWith('#')) return String(x.tags ?? '').toLowerCase().split(',').map((s) => s.trim()).includes(needle.slice(1))
+      if (serverSearch) return true // the server already returned only the matches
       return m.searchFields.some((f) => String(x[f] ?? '').toLowerCase().includes(needle))
     })
     if (fieldByName.pinned) r = [...r].sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned))
     return r
-  }, [items, q, filters, m.searchFields, fieldByName])
+  }, [items, q, dq, serverSearch, filters, m.searchFields, fieldByName])
 
   const titleOf = (r: Rec) => (m.titleOf ? m.titleOf(r) : String(r[m.titleField] ?? ''))
 
@@ -83,7 +99,6 @@ export default function GenericPage({ m }: { m: Module }) {
     try {
       const patch = await a.run(r)
       if (patch) await update(r.id, patch)
-      else await reload()
       setActionError('')
       await reload()
     } catch (e) {

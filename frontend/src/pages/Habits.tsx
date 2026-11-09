@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Check, Flame, Plus } from 'lucide-react'
 import { useCollection } from '../data'
-import { pb, uidOwner, type Rec } from '../pb'
+import { logHabitToday, type Rec } from '../pb'
 import { RecordModal } from '../components/RecordModal'
 import { Badge, Empty, PageHead, Progress } from '../components/ui'
 import { opts, type Field } from '../types'
@@ -32,14 +32,16 @@ function fieldsFor(kind: Tab): Field[] {
 
 export default function HabitsPage() {
   const habits = useCollection('habits', { sort: 'created' })
-  const since = addDays(today(), -120)
+  // a year of history, so streaks are not cut short (the streak loop stops at 400 days)
+  const since = addDays(today(), -400)
   const logs = useCollection('habit_logs', { filter: `date >= "${since}"` })
   const [tab, setTab] = useState<Tab>('habit')
   const [showArchived, setShowArchived] = useState(false)
   const [editing, setEditing] = useState<Rec | 'new' | null>(null)
   const [err, setErr] = useState('')
 
-  const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(today(), i - 6)), [])
+  const todayKey = today()
+  const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(todayKey, i - 6)), [todayKey])
   const logSet = useMemo(() => {
     const m = new Map<string, Rec>()
     logs.items.forEach((l) => m.set(`${l.habit}|${l.date}`, l))
@@ -77,7 +79,7 @@ export default function HabitsPage() {
   const markDone = async (h: Rec) => {
     try {
       await habits.update(h.id, { last_done: today() })
-      await pb.collection('habit_logs').create({ user: uidOwner(), habit: h.id, date: today() })
+      await logHabitToday(h.id)
       await logs.reload()
     } catch (e) { setErr(errMsg(e)) }
   }

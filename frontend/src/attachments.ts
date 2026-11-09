@@ -12,6 +12,9 @@ import { pb, uidOwner, type Rec } from './pb'
  * note stays portable (works against a local or a remote PocketBase, and survives the
  * Obsidian sync as ordinary text). We rewrite it to a live URL only when rendering or
  * editing, via `resolveAttachmentUrls` / the CodeMirror image widget.
+ *
+ * The `file` field is not marked "protected", so PocketBase serves it from a plain URL
+ * (record id + random file suffix) and <img> tags work without any token.
  */
 export const ATTACHMENT_SCHEME = 'muninn-attachment:'
 
@@ -50,36 +53,9 @@ export async function uploadImage(file: File): Promise<string> {
   return `![${alt}](${ATTACHMENT_SCHEME}${rec.id}/${stored})`
 }
 
-/*
- * Attachment files are private (the collection's View rule is `user = @request.auth.id`),
- * so a plain <img src> gets a 403 — the browser can't send the Authorization header.
- * PocketBase's answer is a short-lived *file token* passed as a `?token=` query param.
- * We fetch one, cache it, and refresh it before it expires (~2 min). Callers should
- * `await ensureFileToken()` once before rendering/mounting so the first paint has a token.
- */
-let fileToken = ''
-let fileTokenAt = 0
-let pending: Promise<string> | null = null
-const TOKEN_TTL_MS = 90_000 // refresh a bit before PocketBase's ~2 min expiry
-
-export async function ensureFileToken(): Promise<string> {
-  if (!pb.authStore.isValid) return ''
-  if (fileToken && Date.now() - fileTokenAt < TOKEN_TTL_MS) return fileToken
-  if (pending) return pending
-  pending = pb.files.getToken()
-    .then((tok) => { fileToken = tok; fileTokenAt = Date.now(); return tok })
-    .catch(() => fileToken) // keep the old token on a transient failure
-    .finally(() => { pending = null })
-  return pending
-}
-
 function buildUrl(id: string, filename: string): string {
   // pb.files.getURL is the stable SDK helper; feed it a minimal record-like object
-  return pb.files.getURL(
-    { id, collectionName: 'attachments' } as unknown as Rec,
-    filename.trim(),
-    fileToken ? { token: fileToken } : {},
-  )
+  return pb.files.getURL({ id, collectionName: 'attachments' } as unknown as Rec, filename.trim())
 }
 
 /** Turn a single `muninn-attachment:ID/FILE` reference into a servable file URL. */
@@ -87,8 +63,45 @@ export function attachmentUrl(ref: string): string {
   const body = ref.startsWith(ATTACHMENT_SCHEME) ? ref.slice(ATTACHMENT_SCHEME.length) : ref
   const slash = body.indexOf('/')
   if (slash < 0) return ref
-  void ensureFileToken() // warm the cache for next time without blocking this call
   return buildUrl(body.slice(0, slash), body.slice(slash + 1))
+}
+
+/* ---------- Obsidian embeds: ![[Pasted image 123.png|300]] ---------- */
+const IMAGE_NAME = /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i
+export const isImageName = (s: string) => IMAGE_NAME.test(s.trim())
+
+/**
+ * Images the vault sync agent uploaded, by lower-case file name. The embed keeps the plain file name
+ * (exactly as Obsidian writes it), so this index is how Muninn finds the picture again.
+ */
+let vaultImages = new Map<string, { id: string; file: string }>()
+
+export async function loadImageIndex(): Promise<void> {
+  try {
+    const list = await pb.collection('attachments').getFullList<Rec>({ fields: 'id,name,file' })
+    const next = new Map<string, { id: string; file: string }>()
+    list.forEach((r) => { if (r.name && r.file) next.set(String(r.name).toLowerCase(), { id: r.id, file: String(r.file) }) })
+    vaultImages = next
+  } catch { /* offline: keep the previous index */ }
+}
+
+/** URL for an embed target such as "Images/photo.png" or "photo.png#anchor"; '' when it was never synced. */
+export function embedImageUrl(target: string): string {
+  const name = target.split('#')[0].trim().split(/[\\/]/).pop() ?? ''
+  const hit = vaultImages.get(name.toLowerCase())
+  return hit ? buildUrl(hit.id, hit.file) : ''
+}
+
+/** Splits the inside of ![[...]]: target, plus the optional "|300", "|300x200" or "|alt text" parts. */
+export function parseEmbed(inner: string): { target: string; width: string; height: string; alt: string } {
+  const [target, ...opts] = inner.split('|')
+  let width = '', height = '', alt = ''
+  for (const o of opts) {
+    const s = o.trim()
+    const size = /^(\d+)(?:x(\d+))?$/.exec(s)
+    if (size) { width = size[1]; height = size[2] ?? '' } else if (s) alt = s
+  }
+  return { target: target.trim(), width, height, alt }
 }
 
 /** Does this markdown contain any attachment references? */
@@ -97,7 +110,6 @@ export const hasAttachments = (src: string) => src.includes(ATTACHMENT_SCHEME)
 /** Replace every attachment reference in markdown with a live URL (for rendering). */
 export function resolveAttachmentUrls(src: string): string {
   if (!hasAttachments(src)) return src
-  void ensureFileToken()
   // capture everything up to the closing ")" so filenames with spaces still resolve
   const re = new RegExp(`${ATTACHMENT_SCHEME}([a-z0-9]+)/([^)]+)`, 'gi')
   return src.replace(re, (_m, id: string, filename: string) => buildUrl(id, filename))

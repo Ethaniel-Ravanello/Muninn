@@ -383,7 +383,11 @@ tbody tr:hover { background: var(--surface-2); }
 .md tr:last-child td { border-bottom: 1px solid var(--border-2); }
 .md th { background: var(--surface); text-transform: none; letter-spacing: 0; font-size: inherit; color: var(--text); }
 .md tbody tr { cursor: default; }
-.md img { max-width: 100%; border-radius: 8px; }
+.md img { max-width: 100%; height: auto; border-radius: 8px; }
+.md .embed-missing {
+  display: inline-block; padding: 2px 8px; border: 1px dashed var(--border-2); border-radius: 6px;
+  color: var(--faint); font-size: 0.9em;
+}
 .md a.wikilink { color: var(--accent-2); border-bottom: 1px dotted var(--accent-2); }
 .md a.wikilink:hover { text-decoration: none; background: rgba(176, 124, 255, 0.12); }
 .md a.wikilink.unresolved { color: var(--faint); border-bottom-style: dashed; }

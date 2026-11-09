@@ -11,7 +11,8 @@ export interface Field {
   options?: Option[]
   required?: boolean
   placeholder?: string
-  default?: unknown
+  /** a function is evaluated each time the form opens (use it for "today" so it never goes stale) */
+  default?: unknown | (() => unknown)
   /** span both columns in the form */
   full?: boolean
   /** do not render on list cards / tables */

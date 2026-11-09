@@ -4,8 +4,8 @@ import {
   HeartPulse, Inbox, LayoutDashboard, Landmark, NotebookPen, Repeat, StickyNote, Target, Users, Wallet,
 } from 'lucide-react'
 import { opts, type Field } from './types'
-import { pb, uidOwner, type Rec } from './pb'
-import { advance, diffDays, money, today } from './util'
+import { payBill, type Rec } from './pb'
+import { diffDays, money, today } from './util'
 
 export interface RowAction {
   label: string
@@ -29,6 +29,12 @@ export interface Module {
   /** records open on their own page (/route/:id) instead of the popup form */
   detailRoute?: boolean
   sort: string
+  /**
+   * Light list: only these fields are downloaded for the list view (PocketBase `fields` syntax), e.g.
+   * `content:excerpt(240,true)` returns a short preview instead of the whole text. Text search is then
+   * done by the server, because the full text is not on the client.
+   */
+  listFields?: string
   view: 'cards' | 'table'
   filterFields?: string[]
   searchFields: string[]
@@ -79,7 +85,7 @@ export const MODULES: Module[] = [
       { name: 'name', label: 'Name', type: 'text', required: true, placeholder: 'Internet, electricity token, Spotify' },
       { name: 'amount', label: 'Amount', type: 'money' },
       { name: 'cycle', label: 'Repeats', type: 'select', options: opts('weekly', 'monthly', 'yearly'), default: 'monthly', required: true },
-      { name: 'next_due', label: 'Next due', type: 'date', warn: true, default: today() },
+      { name: 'next_due', label: 'Next due', type: 'date', warn: true, default: today },
       { name: 'category', label: 'Category', type: 'text', suggest: ['Utilities', 'Internet', 'Streaming', 'Apps', 'Insurance', 'Rent'] },
       { name: 'active', label: 'Active', type: 'checkbox', default: true, placeholder: 'Active' },
       { name: 'notes', label: 'Notes', type: 'textarea', hideInList: true },
@@ -87,13 +93,7 @@ export const MODULES: Module[] = [
     actions: [{
       label: 'Mark paid',
       show: (r) => !!r.active,
-      run: async (r) => {
-        await pb.collection('expenses').create({
-          user: uidOwner(), title: r.name, amount: r.amount, type: 'expense',
-          category: r.category || 'Subscriptions', date: today(), note: 'Bill paid',
-        })
-        return { next_due: advance(r.next_due || today(), r.cycle) }
-      },
+      run: async (r) => { await payBill(r) },
     }],
     summary: (rows) => {
       const act = rows.filter((r) => r.active)
@@ -166,6 +166,7 @@ export const MODULES: Module[] = [
   {
     route: 'notes', collection: 'notes', title: 'Notes', sub: 'Long-form thinking, organised by category.',
     newLabel: 'New note', titleField: 'title', detailRoute: true, sort: '-updated', view: 'cards', filterFields: ['category'],
+    listFields: 'id,created,updated,title,category,tags,pinned,content:excerpt(240,true)',
     searchFields: ['title', 'content', 'category', 'tags'],
     fields: [
       { name: 'title', label: 'Title', type: 'text', required: true, full: true },
@@ -180,7 +181,7 @@ export const MODULES: Module[] = [
     newLabel: 'New entry', titleField: 'date', titleOf: (r) => new Date(r.date + 'T00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }),
     sort: '-date', view: 'cards', searchFields: ['content', 'tags', 'date'],
     fields: [
-      { name: 'date', label: 'Date', type: 'date', required: true, default: today() },
+      { name: 'date', label: 'Date', type: 'date', required: true, default: today },
       { name: 'mood', label: 'Mood', type: 'rating' },
       { name: 'tags', label: 'Tags', type: 'tags', full: true },
       { name: 'content', label: 'Entry', type: 'textarea' },
@@ -242,7 +243,7 @@ export const MODULES: Module[] = [
     newLabel: 'Log entry', titleField: 'type', sort: '-date', view: 'table', filterFields: ['type'],
     searchFields: ['type', 'notes', 'unit'],
     fields: [
-      { name: 'date', label: 'Date', type: 'date', required: true, default: today() },
+      { name: 'date', label: 'Date', type: 'date', required: true, default: today },
       { name: 'type', label: 'Type', type: 'select', options: opts('weight', 'blood_pressure', 'sleep', 'checkup', 'medication', 'other'), default: 'weight', required: true },
       { name: 'value', label: 'Value', type: 'number' },
       { name: 'unit', label: 'Unit', type: 'text', placeholder: 'kg, hours, mmHg' },

@@ -5,5 +5,7 @@ backend/pocketbase.exe
 backend/pocketbase
 .env
 .env.*
+!.env.example
+/config.json
 sync/config.json
 sync/state-*.json

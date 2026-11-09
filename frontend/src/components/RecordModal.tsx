@@ -70,7 +70,7 @@ function initialValue(f: Field, initial?: FormData): unknown {
     if ((f.type === 'number' || f.type === 'money') && Number(v) === 0) return ''
     return v
   }
-  if (f.default !== undefined) return f.default
+  if (f.default !== undefined) return typeof f.default === 'function' ? (f.default as () => unknown)() : f.default
   if (f.type === 'checkbox') return false
   if (f.type === 'rating' || f.type === 'progress') return 0
   if (f.type === 'select' && f.required) return f.options?.[0]?.value ?? ''

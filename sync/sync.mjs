@@ -44,7 +44,7 @@ function loadConfig() {
   }
   const missing = ['email', 'password', 'vault'].filter((k) => !cfg[k])
   if (missing.length) {
-    console.error(`Missing config: ${missing.join(', ')}. Copy config.example.json to config.json and fill it in.`)
+    console.error(`Missing config: ${missing.join(', ')}. Copy .env.example to .env and fill it in (run with: node --env-file=.env sync.mjs).`)
     process.exit(2)
   }
   cfg.vault = path.resolve(cfg.vault)
@@ -72,11 +72,12 @@ class Api {
   constructor(cfg) { this.cfg = cfg; this.token = ''; this.userId = '' }
 
   async req(method, url, body, retry = true) {
+    const isForm = body instanceof FormData // image uploads: fetch sets the multipart boundary itself
     const res = await fetch(this.cfg.url + url, {
       method,
-      headers: { 'Content-Type': 'application/json', ...(this.token ? { Authorization: this.token } : {}) },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(30_000),
+      headers: { ...(isForm ? {} : { 'Content-Type': 'application/json' }), ...(this.token ? { Authorization: this.token } : {}) },
+      body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
+      signal: AbortSignal.timeout(isForm ? 120_000 : 30_000),
     })
     if (res.status === 401 && retry && !url.includes('auth-with-password')) {
       await this.login()
@@ -103,6 +104,24 @@ class Api {
     }
     return out
   }
+  async listAttachmentIds() {
+    const out = new Set()
+    for (let page = 1; ; page++) {
+      const r = await this.req('GET', `/api/collections/attachments/records?page=${page}&perPage=200&fields=id`)
+      r.items.forEach((x) => out.add(x.id))
+      if (page >= r.totalPages) break
+    }
+    return out
+  }
+  imageForm(name, buf, mime) {
+    const fd = new FormData()
+    fd.append('user', this.userId)
+    fd.append('name', name)
+    fd.append('file', new Blob([buf], { type: mime }), name)
+    return fd
+  }
+  createAttachment(name, buf, mime) { return this.req('POST', '/api/collections/attachments/records', this.imageForm(name, buf, mime)) }
+  updateAttachment(id, name, buf, mime) { return this.req('PATCH', `/api/collections/attachments/records/${id}`, this.imageForm(name, buf, mime)) }
   create(data) { return this.req('POST', '/api/collections/notes/records', { ...data, user: this.userId }) }
   update(id, data) { return this.req('PATCH', `/api/collections/notes/records/${id}`, data) }
   remove(id) { return this.req('DELETE', `/api/collections/notes/records/${id}`) }
@@ -202,6 +221,102 @@ function scan(cfg) {
   }
   walk(cfg.vault, '')
   return out
+}
+
+/* ------------------------------------------------------------------ images */
+// Obsidian embeds images as ![[Pasted image 123.png|300]] (the number is the width). The note text is
+// left exactly as written; here we only make sure each image a note uses also exists in Muninn
+// (the `attachments` collection, named after the file), so Muninn can draw it.
+const IMAGE_TYPES = new Map([
+  ['.png', 'image/png'], ['.jpg', 'image/jpeg'], ['.jpeg', 'image/jpeg'], ['.gif', 'image/gif'],
+  ['.webp', 'image/webp'], ['.svg', 'image/svg+xml'], ['.bmp', 'image/bmp'], ['.avif', 'image/avif'],
+])
+const MAX_IMAGE_BYTES = 15_000_000 // the attachments collection refuses bigger files
+const MAX_UPLOADS_PER_PASS = 25 // a big vault is brought over over a few passes instead of one long stall
+const EMBED = /!\[\[([^\]\n|#^]+)(?:[#^][^\]\n|]*)?(?:\|[^\]\n]*)?\]\]/g
+const warnedImages = new Set()
+
+function referencedImages(files) {
+  const refs = new Set()
+  for (const f of files.values()) {
+    if (f.locked || !f.text) continue
+    for (const m of f.text.matchAll(EMBED)) {
+      const target = m[1].trim()
+      if (IMAGE_TYPES.has(path.extname(target).toLowerCase())) refs.add(target.replace(/\\/g, '/').toLowerCase())
+    }
+  }
+  return refs
+}
+
+function scanImages(cfg) {
+  const out = []
+  const walk = (dir, rel) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.name.startsWith('.')) continue
+      const r = rel ? `${rel}/${e.name}` : e.name
+      const abs = path.join(dir, e.name)
+      if (e.isDirectory()) { walk(abs, r); continue }
+      const mime = e.isFile() ? IMAGE_TYPES.get(path.extname(e.name).toLowerCase()) : undefined
+      if (!mime) continue
+      try {
+        const st = fs.statSync(abs)
+        out.push({ rel: r, abs, size: st.size, mtimeMs: st.mtimeMs, mime, busy: Date.now() - st.mtimeMs < SETTLE_MS })
+      } catch { /* vanished while scanning */ }
+    }
+  }
+  walk(cfg.vault, '')
+  return out
+}
+
+async function syncImages(cfg, api, state, files) {
+  state.images ??= {}
+  const refs = referencedImages(files)
+  if (refs.size === 0) return
+
+  const images = scanImages(cfg)
+  const byRel = new Map(images.map((i) => [i.rel.toLowerCase(), i]))
+  const byName = new Map()
+  for (const i of images) { const n = path.posix.basename(i.rel).toLowerCase(); if (!byName.has(n)) byName.set(n, i) }
+  // Obsidian finds an embed by bare file name or by a path ending in the target
+  const find = (t) => (t.includes('/')
+    ? byRel.get(t) ?? images.find((i) => i.rel.toLowerCase().endsWith('/' + t))
+    : byName.get(t))
+
+  const wanted = new Map()
+  for (const t of refs) {
+    const img = find(t)
+    if (img) wanted.set(img.rel.toLowerCase(), img)
+    else if (!warnedImages.has(t)) { warnedImages.add(t); warn(`Image "${t}" is embedded in a note but is not in the vault`) }
+  }
+  if (wanted.size === 0) return
+
+  const remote = await api.listAttachmentIds()
+  let uploaded = 0, deferred = 0
+  for (const [key, img] of wanted) {
+    try {
+      const known = state.images[key]
+      const alive = known && remote.has(known.id)
+      if (alive && known.size === img.size && known.mtime === img.mtimeMs) continue
+      if (img.busy) continue
+      if (img.size > MAX_IMAGE_BYTES) {
+        if (!warnedImages.has(key)) { warnedImages.add(key); warn(`Skipping image ${img.rel}: bigger than ${MAX_IMAGE_BYTES / 1e6} MB`) }
+        continue
+      }
+      if (uploaded >= MAX_UPLOADS_PER_PASS) { deferred++; continue }
+      const name = path.posix.basename(img.rel)
+      log(`  ${alive ? 'update' : 'upload'} image  ${img.rel}`)
+      uploaded++
+      if (DRY) continue
+      const buf = fs.readFileSync(img.abs)
+      const rec = alive
+        ? await api.updateAttachment(known.id, name, buf, img.mime)
+        : await api.createAttachment(name, buf, img.mime)
+      state.images[key] = { id: rec.id, size: img.size, mtime: img.mtimeMs, name }
+    } catch (e) {
+      warn(`Failed on image ${img.rel}: ${e.message}`)
+    }
+  }
+  if (uploaded || deferred) log(`${DRY ? '[dry-run] ' : ''}Images: ${uploaded} sent${deferred ? `, ${deferred} more on the next pass` : ''}.`)
 }
 
 /* ---------------------------------------------------------------- the pass */
@@ -476,6 +591,9 @@ async function cycle(cfg, api, state) {
     }
   }
 
+  // images last, and never fatal: a failed upload must not stop notes from syncing
+  try { await syncImages(cfg, api, state, files) } catch (e) { warn(`Image sync failed: ${e.message}`) }
+
   const c = counts
   log(`${DRY ? '[dry-run] ' : ''}Pass done: ${c.toNotes} vault->Muninn, ${c.toFiles} Muninn->vault, ${c.created} new, ${c.removed} removed, ${c.conflicts} conflicts.`)
 }
@@ -502,7 +620,9 @@ async function main() {
     if (ONCE) break
     await sleep(cfg.interval * 1000)
   }
-  process.exit(failed ? 1 : 0)
+  // set the code and let Node exit by itself; calling process.exit() with a request still closing
+  // triggers a libuv "Assertion failed" message on Windows
+  process.exitCode = failed ? 1 : 0
 }
 
 main()

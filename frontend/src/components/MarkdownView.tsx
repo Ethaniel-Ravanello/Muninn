@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { Marked, type TokenizerAndRendererExtension } from 'marked'
 import DOMPurify from 'dompurify'
 import type { Rec } from '../pb'
-import { resolveAttachmentUrls } from '../attachments'
+import { embedImageUrl, isImageName, parseEmbed, resolveAttachmentUrls } from '../attachments'
 
 const escapeHtml = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string)
@@ -28,6 +28,33 @@ export function wikilinkTargets(content: string): string[] {
 
 function extensions(notes: Rec[]): TokenizerAndRendererExtension[] {
   return [
+    {
+      // ![[Pasted image 123.png|300]] draws the image; ![[Other note]] is shown as a link (no transclusion yet)
+      name: 'embed',
+      level: 'inline',
+      start: (src) => { const i = src.indexOf('![['); return i < 0 ? undefined : i },
+      tokenizer(src) {
+        const m = /^!\[\[([^\]\n]+?)\]\]/.exec(src)
+        if (!m) return undefined
+        return { type: 'embed', raw: m[0], inner: m[1] }
+      },
+      renderer(token) {
+        const { target, width, height, alt } = parseEmbed(String(token.inner))
+        if (isImageName(target.split('#')[0])) {
+          const url = embedImageUrl(target)
+          if (!url) {
+            return `<span class="embed-missing" title="Not synced to Muninn yet. Run the vault sync agent.">Image not synced: ${escapeHtml(target)}</span>`
+          }
+          const size = `${width ? ` width="${width}"` : ''}${height ? ` height="${height}"` : ''}`
+          return `<img class="embed" src="${escapeHtml(url)}" alt="${escapeHtml(alt || target)}"${size} loading="lazy">`
+        }
+        const label = escapeHtml(alt || target)
+        const hit = resolveNote(notes, target)
+        return hit
+          ? `<a class="wikilink" href="#/notes/${hit.id}" data-note="${hit.id}">${label}</a>`
+          : `<a class="wikilink unresolved" href="#" data-create="${escapeHtml(target.split('#')[0].trim())}" title="Not created yet. Click to create.">${label}</a>`
+      },
+    },
     {
       name: 'wikilink',
       level: 'inline',
